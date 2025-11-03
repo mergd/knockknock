@@ -15,6 +15,14 @@ export class CartesiaTTSService {
   constructor(private config: CartesiaTTSConfig = {}) {}
 
   async connect(): Promise<void> {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return Promise.resolve();
+    }
+
+    if (this.ws) {
+      this.disconnect();
+    }
+
     return new Promise((resolve, reject) => {
       const modelId = this.config.modelId || config.cartesia.modelId;
       const voiceId = this.config.voiceId || config.cartesia.voiceId;
@@ -59,7 +67,11 @@ export class CartesiaTTSService {
         try {
           const message = JSON.parse(data.toString());
           if (message.data) {
-            this.audioBuffer.push(Buffer.from(message.data, 'base64'));
+            const audioChunk = Buffer.from(message.data, 'base64');
+            this.audioBuffer.push(audioChunk);
+            console.log(`[CARTESIA] Received audio chunk: ${audioChunk.length} bytes (total: ${this.audioBuffer.length} chunks)`);
+          } else if (message.done) {
+            console.log('[CARTESIA] Audio generation complete');
           }
         } catch (error) {
           console.error('Error parsing Cartesia message:', error);
@@ -68,35 +80,94 @@ export class CartesiaTTSService {
     });
   }
 
-  async streamText(text: string, continueContext = false): Promise<void> {
-    if (!this.isConnected || !this.ws) {
-      throw new Error('Cartesia TTS WebSocket not connected');
+  async streamText(text: string, continueContext = false, retries = 3): Promise<void> {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        if (attempt < retries - 1) {
+          console.log(`[CARTESIA] Connection not ready, attempting to reconnect (attempt ${attempt + 1}/${retries})...`);
+          try {
+            await this.connect();
+          } catch (error) {
+            if (attempt === retries - 1) {
+              throw new Error(`Cartesia TTS WebSocket not connected after ${retries} attempts`);
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+            continue;
+          }
+        } else {
+          throw new Error('Cartesia TTS WebSocket not connected');
+        }
+      }
+
+      try {
+        const modelId = this.config.modelId || config.cartesia.modelId;
+        const voiceId = this.config.voiceId || config.cartesia.voiceId;
+
+        if (!this.contextId) {
+          this.contextId = `context-${Date.now()}`;
+        }
+
+        this.audioBuffer = [];
+
+        const message = {
+          model_id: modelId,
+          transcript: text,
+          voice: {
+            mode: 'id',
+            id: voiceId,
+          },
+          context_id: this.contextId,
+          continue: continueContext,
+          output_format: {
+            container: 'raw',
+            encoding: 'pcm_mulaw',
+            sample_rate: 8000,
+          },
+        };
+
+        console.log(`[CARTESIA] Sending text: "${text}"`);
+        this.ws.send(JSON.stringify(message));
+        
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return;
+      } catch (error) {
+        if (attempt === retries - 1) {
+          throw error;
+        }
+        console.log(`[CARTESIA] Error sending text, retrying (attempt ${attempt + 1}/${retries})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
     }
+  }
 
-    const modelId = this.config.modelId || config.cartesia.modelId;
-    const voiceId = this.config.voiceId || config.cartesia.voiceId;
-
-    if (!this.contextId) {
-      this.contextId = `context-${Date.now()}`;
+  async waitForAudio(timeout: number = 3000): Promise<boolean> {
+    const startTime = Date.now();
+    let lastChunkTime = startTime;
+    let lastChunkCount = 0;
+    
+    while (Date.now() - startTime < timeout) {
+      const currentLength = this.audioBuffer.length;
+      
+      if (currentLength > lastChunkCount) {
+        lastChunkTime = Date.now();
+        lastChunkCount = currentLength;
+      }
+      
+      if (currentLength > 0 && Date.now() - lastChunkTime > 300) {
+        console.log(`[CARTESIA] Audio complete: ${currentLength} chunks`);
+        return true;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
-
-    const message = {
-      model_id: modelId,
-      transcript: text,
-      voice: {
-        mode: 'id',
-        id: voiceId,
-      },
-      context_id: this.contextId,
-      continue: continueContext,
-      output_format: {
-        container: 'raw',
-        encoding: 'pcm_mulaw',
-        sample_rate: 8000,
-      },
-    };
-
-    this.ws.send(JSON.stringify(message));
+    
+    const hasAudio = this.audioBuffer.length > 0;
+    if (hasAudio) {
+      console.log(`[CARTESIA] Audio received (timeout): ${this.audioBuffer.length} chunks`);
+    } else {
+      console.warn('[CARTESIA] No audio received within timeout');
+    }
+    return hasAudio;
   }
 
   getAudioChunks(): Buffer[] {

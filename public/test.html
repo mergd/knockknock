@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KnockKnock Test Client</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            margin-top: 0;
+            color: #333;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-weight: 500;
+        }
+        .status.disconnected {
+            background: #fee;
+            color: #c33;
+        }
+        .status.connected {
+            background: #efe;
+            color: #3c3;
+        }
+        .status.recording {
+            background: #eef;
+            color: #33c;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #connectBtn {
+            background: #4CAF50;
+            color: white;
+        }
+        #connectBtn:hover:not(:disabled) {
+            background: #45a049;
+        }
+        #disconnectBtn {
+            background: #f44336;
+            color: white;
+        }
+        #disconnectBtn:hover:not(:disabled) {
+            background: #da190b;
+        }
+        .log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin: 4px 0;
+            padding: 4px 0;
+            border-bottom: 1px solid #333;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .log-time {
+            color: #888;
+            margin-right: 8px;
+        }
+        .log-info { color: #4ec9b0; }
+        .log-error { color: #f48771; }
+        .log-media { color: #ce9178; }
+        audio {
+            width: 100%;
+            margin-top: 15px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 KnockKnock Test Client</h1>
+        
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div class="controls">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+        </div>
+        
+        <div>
+            <label>
+                <input type="checkbox" id="autoReconnect" checked>
+                Auto-reconnect on disconnect
+            </label>
+        </div>
+        
+        <audio id="audioOutput" controls></audio>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let streamSid = null;
+        let mediaStream = null;
+        let audioContext = null;
+        let mediaRecorder = null;
+        let isRecording = false;
+        let sequenceNumber = 0;
+        let audioQueue = [];
+        let audioContextOut = null;
+        let sourceNode = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.innerHTML = `<span class="log-time">${time}</span>${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(`[${type.toUpperCase()}]`, message);
+        }
+
+        function updateStatus(text, className) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = text;
+            statusDiv.className = `status ${className}`;
+        }
+
+        async function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('Already connected', 'error');
+                return;
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}`;
+            
+            log(`Connecting to ${wsUrl}...`);
+
+            try {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    log('WebSocket connected', 'info');
+                    updateStatus('Connected', 'connected');
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+
+                    streamSid = `test-stream-${Date.now()}`;
+                    sequenceNumber = 0;
+                    
+                    ws.send(JSON.stringify({
+                        event: 'start',
+                        start: {
+                            streamSid: streamSid,
+                            accountSid: 'test-account',
+                            callSid: 'test-call',
+                            tracks: ['inbound', 'outbound'],
+                            mediaFormat: {
+                                encoding: 'audio/x-mulaw',
+                                sampleRate: 8000
+                            }
+                        }
+                    }));
+
+                    log(`Sent start event with streamSid: ${streamSid}`);
+                    startAudioCapture();
+                };
+
+                ws.onmessage = async (event) => {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        
+                        if (msg.event === 'media' && msg.media && msg.media.payload) {
+                            handleIncomingAudio(msg.media.payload);
+                        } else if (msg.event === 'connected') {
+                            log('Server confirmed connection', 'info');
+                        } else {
+                            log(`Received: ${JSON.stringify(msg)}`, 'info');
+                        }
+                    } catch (error) {
+                        log(`Error parsing message: ${error.message}`, 'error');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`WebSocket error: ${error}`, 'error');
+                };
+
+                ws.onclose = () => {
+                    log('WebSocket disconnected', 'error');
+                    updateStatus('Disconnected', 'disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                    stopAudioCapture();
+                    
+                    if (document.getElementById('autoReconnect').checked) {
+                        log('Auto-reconnecting in 2 seconds...', 'info');
+                        setTimeout(connect, 2000);
+                    }
+                };
+            } catch (error) {
+                log(`Connection error: ${error.message}`, 'error');
+            }
+        }
+
+        async function startAudioCapture() {
+            try {
+                log('Requesting microphone access...', 'info');
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 8000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                log('Microphone access granted', 'info');
+                updateStatus('Connected & Recording', 'recording');
+                isRecording = true;
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 8000
+                });
+
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) {
+                        return;
+                    }
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const mulawData = pcmToMulaw(inputData);
+                    
+                    const payload = arrayBufferToBase64(mulawData.buffer);
+                    
+                    ws.send(JSON.stringify({
+                        event: 'media',
+                        streamSid: streamSid,
+                        media: {
+                            payload: payload,
+                            timestamp: Date.now().toString()
+                        },
+                        sequenceNumber: (sequenceNumber++).toString()
+                    }));
+                };
+
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+            } catch (error) {
+                log(`Audio capture error: ${error.message}`, 'error');
+                log('Make sure to allow microphone access', 'error');
+            }
+        }
+
+        function stopAudioCapture() {
+            isRecording = false;
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+            }
+        }
+
+        function pcmToMulaw(pcmData) {
+            const mulaw = new Uint8Array(pcmData.length);
+            const bias = 33;
+            const clip = 32635;
+            
+            for (let i = 0; i < pcmData.length; i++) {
+                let sample = Math.max(-32768, Math.min(32767, Math.floor(pcmData[i] * 32768)));
+                let sign = (sample >> 8) & 0x80;
+                if (sign) sample = -sample;
+                sample += bias;
+                if (sample > clip) sample = clip;
+                
+                let exponent = 0;
+                let expMask = 0x4000;
+                while ((sample & expMask) === 0 && exponent < 8) {
+                    exponent++;
+                    expMask >>= 1;
+                }
+                
+                let mantissa = (sample >> (exponent + 3)) & 0x0F;
+                let mulawByte = ~(sign | (exponent << 4) | mantissa);
+                mulaw[i] = mulawByte;
+            }
+            
+            return mulaw;
+        }
+
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binary = window.atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function mulawToPcm(mulawData) {
+            const pcm = new Int16Array(mulawData.length);
+            const bias = 33;
+            
+            for (let i = 0; i < mulawData.length; i++) {
+                let mulawByte = ~mulawData[i];
+                let sign = mulawByte & 0x80;
+                let exponent = (mulawByte >> 4) & 0x07;
+                let mantissa = mulawByte & 0x0F;
+                
+                let sample = ((mantissa << (exponent + 3)) + bias) << 1;
+                if (sign) sample = -sample;
+                pcm[i] = sample;
+            }
+            
+            return pcm;
+        }
+
+        async function handleIncomingAudio(base64Payload) {
+            try {
+                const mulawBuffer = base64ToArrayBuffer(base64Payload);
+                const mulawArray = new Uint8Array(mulawBuffer);
+                const pcmData = mulawToPcm(mulawArray);
+                
+                if (!audioContextOut) {
+                    audioContextOut = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 8000
+                    });
+                }
+
+                const audioBuffer = audioContextOut.createBuffer(1, pcmData.length, 8000);
+                const channelData = audioBuffer.getChannelData(0);
+                
+                for (let i = 0; i < pcmData.length; i++) {
+                    channelData[i] = pcmData[i] / 32768.0;
+                }
+
+                audioQueue.push(audioBuffer);
+                playAudioQueue();
+                
+            } catch (error) {
+                log(`Error handling audio: ${error.message}`, 'error');
+            }
+        }
+
+        let isPlaying = false;
+        async function playAudioQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+            
+            isPlaying = true;
+            while (audioQueue.length > 0) {
+                const audioBuffer = audioQueue.shift();
+                const source = audioContextOut.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContextOut.destination);
+                
+                await new Promise((resolve) => {
+                    source.onended = resolve;
+                    source.start();
+                });
+            }
+            isPlaying = false;
+        }
+
+        function disconnect() {
+            if (ws) {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        event: 'stop',
+                        streamSid: streamSid
+                    }));
+                }
+                ws.close();
+                ws = null;
+            }
+            stopAudioCapture();
+            updateStatus('Disconnected', 'disconnected');
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            
+            if (audioContextOut) {
+                audioContextOut.close();
+                audioContextOut = null;
+            }
+            audioQueue = [];
+        }
+
+        window.addEventListener('beforeunload', () => {
+            disconnect();
+        });
+    </script>
+</body>
+</html>
+

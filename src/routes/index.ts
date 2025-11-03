@@ -7,27 +7,30 @@ import { processJokeFromRecording } from '../services/voice-joke-service.js';
 const router = express.Router();
 const VoiceResponse = twilio.twiml.VoiceResponse;
 
-export function createRoutes(jokeRepository: JokeRepository) {
+export function createRoutes(jokeRepository: JokeRepository, getWsUrl: () => string) {
   router.post('/webhook/twilio', (req, res) => {
     console.log('[TWILIO WEBHOOK] Received webhook request');
     console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
+    const wsUrl = getWsUrl();
+    if (!wsUrl) {
+      console.error('[TWILIO WEBHOOK] WebSocket URL not available');
+      const twiml = new VoiceResponse();
+      twiml.say({ voice: 'alice' }, 'Service is not ready. Please try again later.');
+      res.type('text/xml');
+      res.send(twiml.toString());
+      return;
+    }
+
     const twiml = new VoiceResponse();
     
-    const recordingUrl = req.body.RecordingUrl;
+    const start = twiml.start();
+    start.stream({
+      url: wsUrl,
+      name: 'media-stream',
+    });
 
-    if (recordingUrl) {
-      twiml.say({ voice: 'alice' }, 'Thank you for your joke. We are processing it now.');
-      twiml.redirect(`/webhook/twilio/process?RecordingUrl=${encodeURIComponent(recordingUrl)}`);
-    } else {
-      twiml.say({ voice: 'alice' }, 'Hi! Tell me a knockknock joke when you are ready.');
-      twiml.record({
-        maxLength: 30,
-        transcribe: true,
-        transcribeCallback: '/webhook/twilio/transcribe',
-        recordingStatusCallback: '/webhook/twilio/recording',
-      });
-      twiml.say({ voice: 'alice' }, 'I did not receive a recording. Goodbye.');
-    }
+    twiml.pause({ length: 30 });
 
     res.type('text/xml');
     res.send(twiml.toString());

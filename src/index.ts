@@ -20,11 +20,14 @@ app.use((req, res, next) => {
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+app.use(express.static('public'));
+
 let db: any;
 let jokeRepository: JokeRepository;
 let twilioWebSocketService: TwilioWebSocketService;
 let cartesiaService: CartesiaTTSService;
 let twilioClient: twilio.Twilio;
+let wsServerUrl: string = '';
 
 async function main() {
   console.log('Initializing database...');
@@ -39,7 +42,7 @@ async function main() {
 
   twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
 
-  app.use(createRoutes(jokeRepository));
+  app.use(createRoutes(jokeRepository, () => wsServerUrl));
 
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error('[ERROR]', err);
@@ -49,37 +52,68 @@ async function main() {
   });
 
   const port = config.server.port;
-  app.listen(port, async () => {
-    console.log(`Express server running on port ${port}`);
-
-    const wsPort = await twilioWebSocketService.start(0);
+  const wsPort = await twilioWebSocketService.start(port, app);
+  console.log(`WebSocket server started on port ${wsPort}`);
+  wsServerUrl = `wss://localhost:${wsPort}`;
+  
+  let publicUrl: string | null = null;
+  
+  if (config.ngrok.url) {
+    publicUrl = config.ngrok.url;
+    const wssUrl = publicUrl.replace('https://', 'wss://');
+    wsServerUrl = wssUrl;
     
-    if (config.ngrok.url) {
-      const publicUrl = config.ngrok.url;
+    console.log(`Using configured ngrok URL: ${publicUrl}`);
+    console.log(`WebSocket URL: ${wsServerUrl}`);
+  } else if (config.ngrok.authToken) {
+    try {
+      await ngrok.authtoken(config.ngrok.authToken);
+      publicUrl = await ngrok.connect(wsPort);
       const wssUrl = publicUrl.replace('https://', 'wss://');
+      wsServerUrl = wssUrl;
       
-      console.log(`Using existing ngrok tunnel: ${publicUrl}`);
-      console.log(`WebSocket server running on port ${wsPort}`);
-      console.log(`WebSocket URL: ${wssUrl}`);
-      console.log(`\nConfigure your Twilio number webhook to: ${publicUrl}/webhook/twilio`);
-    } else if (config.ngrok.authToken) {
+      console.log(`ngrok tunnel established: ${publicUrl}`);
+      console.log(`WebSocket URL: ${wsServerUrl}`);
+    } catch (error: any) {
+      const errorMsg = error?.message || error?.code || 'Unknown error';
+      console.log(`Could not create ngrok tunnel (${errorMsg}). Trying to detect existing tunnel...`);
+      
       try {
-        await ngrok.authtoken(config.ngrok.authToken);
-        const publicUrl = await ngrok.connect(wsPort);
-        const wssUrl = publicUrl.replace('https://', 'wss://');
-        
-        console.log(`ngrok tunnel established: ${wssUrl}`);
-        console.log(`WebSocket server running on port ${wsPort}`);
-        console.log(`\nConfigure your Twilio number webhook to: ${publicUrl}/webhook/twilio`);
-      } catch (error) {
-        console.error('Error setting up ngrok:', error);
-        console.log('Running without ngrok tunnel. For production, configure your own public URL.');
+        const ngrokApi = await fetch('http://localhost:4040/api/tunnels').then(r => r.json());
+        if (ngrokApi.tunnels && ngrokApi.tunnels.length > 0) {
+          publicUrl = ngrokApi.tunnels[0].public_url;
+          wsServerUrl = publicUrl.replace('https://', 'wss://');
+          console.log(`Detected existing ngrok tunnel: ${publicUrl}`);
+          console.log(`WebSocket URL: ${wsServerUrl}`);
+        } else {
+          console.log('No existing ngrok tunnel found.');
+        }
+      } catch (e) {
+        console.log('Could not detect ngrok tunnel (ngrok API not available).');
       }
-    } else {
-      console.log(`WebSocket server running on port ${wsPort}`);
-      console.log('Note: ngrok not configured. Set NGROK_URL or NGROK_AUTH_TOKEN in .env for local development.');
     }
-  });
+  } else {
+    try {
+      const ngrokApi = await fetch('http://localhost:4040/api/tunnels').then(r => r.json());
+      if (ngrokApi.tunnels && ngrokApi.tunnels.length > 0) {
+        publicUrl = ngrokApi.tunnels[0].public_url;
+        wsServerUrl = publicUrl.replace('https://', 'wss://');
+        console.log(`Detected existing ngrok tunnel: ${publicUrl}`);
+        console.log(`WebSocket URL: ${wsServerUrl}`);
+      } else {
+        console.log('No ngrok tunnel detected. Set NGROK_URL or NGROK_AUTH_TOKEN in .env');
+      }
+    } catch (e) {
+      console.log('No ngrok tunnel detected. Set NGROK_URL or NGROK_AUTH_TOKEN in .env');
+    }
+  }
+  
+  if (publicUrl) {
+    console.log(`\n✅ Configure your Twilio number webhook to: ${publicUrl}/webhook/twilio`);
+    console.log(`✅ WebSocket stream URL: ${wsServerUrl}`);
+  } else {
+    console.log(`\n⚠️  No public URL available. WebSocket URL: ${wsServerUrl}`);
+  }
 }
 
 main().catch((error) => {
