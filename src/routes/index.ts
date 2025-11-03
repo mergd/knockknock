@@ -9,6 +9,8 @@ const VoiceResponse = twilio.twiml.VoiceResponse;
 
 export function createRoutes(jokeRepository: JokeRepository) {
   router.post('/webhook/twilio', (req, res) => {
+    console.log('[TWILIO WEBHOOK] Received webhook request');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
     const twiml = new VoiceResponse();
     
     const recordingUrl = req.body.RecordingUrl;
@@ -32,9 +34,14 @@ export function createRoutes(jokeRepository: JokeRepository) {
   });
 
   router.post('/webhook/twilio/process', async (req, res) => {
+    console.log('[TWILIO PROCESS] Processing recording');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Request query:', JSON.stringify(req.query, null, 2));
+    
     const recordingUrl = req.body.RecordingUrl || req.query.RecordingUrl;
     
     if (!recordingUrl) {
+      console.error('[TWILIO PROCESS] No recording URL provided');
       res.status(400).send('No recording URL provided');
       return;
     }
@@ -64,7 +71,8 @@ export function createRoutes(jokeRepository: JokeRepository) {
       res.type('text/xml');
       res.send(twiml.toString());
     } catch (error) {
-      console.error('Error processing joke:', error);
+      console.error('[TWILIO PROCESS] Error processing joke:', error);
+      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
       const twiml = new VoiceResponse();
       twiml.say({ voice: 'alice' }, "Sorry, I couldn't process your joke. Please try again.");
       res.type('text/xml');

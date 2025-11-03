@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 
 dotenv.config();
 
@@ -10,21 +10,23 @@ export const config = {
   },
   cartesia: {
     apiKey: process.env.CARTESIA_API_KEY!,
-    modelId: process.env.CARTESIA_MODEL_ID || 'sonic-3',
-    voiceId: process.env.CARTESIA_VOICE_ID || 'a0e99841-438c-4a64-b679-ae501e7d6091',
+    modelId: process.env.CARTESIA_MODEL_ID || "sonic-3",
+    voiceId:
+      process.env.CARTESIA_VOICE_ID || "a0e99841-438c-4a64-b679-ae501e7d6091",
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY!,
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
   },
   database: {
-    path: process.env.DATABASE_PATH || './data/jokes.db',
+    path: process.env.DATABASE_PATH || "./data/jokes.db",
   },
   server: {
-    port: parseInt(process.env.PORT || '3000', 10),
+    port: parseInt(process.env.PORT || "3000", 10),
   },
   ngrok: {
     authToken: process.env.NGROK_AUTH_TOKEN,
+    url: process.env.NGROK_URL,
   },
   elo: {
     initialRating: 1500,
@@ -35,11 +37,11 @@ export const config = {
 
 function validateConfig() {
   const required = [
-    'TWILIO_ACCOUNT_SID',
-    'TWILIO_AUTH_TOKEN',
-    'TWILIO_PHONE_NUMBER',
-    'CARTESIA_API_KEY',
-    'OPENAI_API_KEY',
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_PHONE_NUMBER",
+    "CARTESIA_API_KEY",
+    "OPENAI_API_KEY",
   ];
 
   for (const key of required) {
@@ -50,4 +52,3 @@ function validateConfig() {
 }
 
 validateConfig();
-
